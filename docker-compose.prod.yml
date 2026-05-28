@@ -1,0 +1,142 @@
+# ============================================================
+# PCCM Production Docker Compose
+# Usage: docker compose -f docker-compose.prod.yml up -d
+# ============================================================
+
+version: "3.9"
+
+services:
+
+  # ── Redis Stack (vector + stream support) ──────────────────
+  redis:
+    image: redis/redis-stack:7.2.0-v10
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"          # bind to loopback only in prod
+    volumes:
+      - redis_data:/data
+    command: >
+      redis-stack-server
+      --requirepass ${REDIS_PASSWORD}
+      --save 60 1
+      --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── PCCM Core (Rust gRPC daemon) ───────────────────────────
+  pccm-core:
+    image: ${REGISTRY:-ghcr.io/yourorg}/pccm-core:${VERSION:-latest}
+    build:
+      context: ./core
+      dockerfile: Dockerfile
+      cache_from:
+        - ${REGISTRY:-ghcr.io/yourorg}/pccm-core:buildcache
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:50051:50051"        # gRPC — internal only
+    environment:
+      - PCCM_AGENT_ID=${PCCM_AGENT_ID:-agent-001}
+      - CRDT_SYNC_INTERVAL_MS=${CRDT_SYNC_INTERVAL_MS:-50}
+      - ACTIVATION_DECAY=${ACTIVATION_DECAY:-0.5}
+      - GOSSIP_PEERS=${GOSSIP_PEERS:-}
+      - SQLITE_PATH=/data/pccm.db
+      - RUST_LOG=pccm_core=info,tonic=warn
+    volumes:
+      - core_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "grpc_health_probe -addr=:50051 2>/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+
+  # ── PCCM API (Python / FastAPI) ────────────────────────────
+  pccm-api:
+    image: ${REGISTRY:-ghcr.io/yourorg}/pccm-api:${VERSION:-latest}
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+      cache_from:
+        - ${REGISTRY:-ghcr.io/yourorg}/pccm-api:buildcache
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"          # reverse-proxied by nginx
+    environment:
+      - PCCM_DAEMON_GRPC=pccm-core:50051
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-local}
+      - PYTHONUNBUFFERED=1
+      - WORKERS=${API_WORKERS:-2}
+    depends_on:
+      redis:
+        condition: service_healthy
+      pccm-core:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+
+  # ── PCCM UI (React SPA via nginx) ──────────────────────────
+  pccm-ui:
+    image: ${REGISTRY:-ghcr.io/yourorg}/pccm-ui:${VERSION:-latest}
+    build:
+      context: ./ui
+      dockerfile: Dockerfile
+      args:
+        - VITE_API_URL=${VITE_API_URL:-https://api.yourdomain.com}
+        - VITE_WS_URL=${VITE_WS_URL:-wss://api.yourdomain.com}
+      cache_from:
+        - ${REGISTRY:-ghcr.io/yourorg}/pccm-ui:buildcache
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      pccm-api:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 64M
+
+  # ── Nginx reverse proxy ────────────────────────────────────
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./deploy/nginx/ssl:/etc/nginx/ssl:ro       # mount your certs here
+      - nginx_cache:/var/cache/nginx
+    depends_on:
+      - pccm-ui
+      - pccm-api
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  redis_data:
+  core_data:
+  nginx_cache:

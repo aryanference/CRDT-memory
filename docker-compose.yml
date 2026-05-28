@@ -1,0 +1,90 @@
+version: "3.9"
+
+services:
+
+  redis:
+    image: redis/redis-stack:7.2.0-v10
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  pccm-core:
+    build:
+      context: ./core
+      dockerfile: Dockerfile
+    ports:
+      - "50051:50051"
+      - "8080:8080"
+    environment:
+      - PCCM_AGENT_ID=${PCCM_AGENT_ID:-agent-001}
+      - CRDT_SYNC_INTERVAL_MS=${CRDT_SYNC_INTERVAL_MS:-50}
+      - ACTIVATION_DECAY=${ACTIVATION_DECAY:-0.5}
+      - SQLITE_PATH=/data/pccm.db
+      - RUST_LOG=pccm_core=info,tonic=warn
+    volumes:
+      - core_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "grpc_health_probe -addr=:50051 2>/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  pccm-api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - PCCM_DAEMON_GRPC=pccm-core:50051
+      - REDIS_URL=redis://redis:6379
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-local}
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      redis:
+        condition: service_healthy
+      pccm-core:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  pccm-mcp:
+    build:
+      context: ./mcp
+      dockerfile: Dockerfile
+    environment:
+      - PCCM_API_URL=http://pccm-api:8000/api
+    depends_on:
+      pccm-api:
+        condition: service_healthy
+    stdin_open: true
+    tty: true
+
+  pccm-ui:
+    build:
+      context: ./ui
+      dockerfile: Dockerfile
+      args:
+        - VITE_API_URL=http://localhost:8000
+        - VITE_WS_URL=ws://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      pccm-api:
+        condition: service_healthy
+
+volumes:
+  redis_data:
+  core_data:

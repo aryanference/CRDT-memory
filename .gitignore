@@ -1,0 +1,53 @@
+# ── Rust ──────────────────────────────────────────────────────
+target/
+**/*.rs.bk
+Cargo.lock
+
+# ── Python ────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Node / UI ─────────────────────────────────────────────────
+node_modules/
+ui/dist/
+ui/.cache/
+*.log
+npm-debug.log*
+
+# ── Environment secrets ───────────────────────────────────────
+.env
+.env.local
+.env.production
+.env.*.local
+*.pem
+*.key
+
+# ── Data / databases ──────────────────────────────────────────
+*.db
+*.db-wal
+*.db-shm
+data/
+
+# ── OS / Editor ───────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ── Docker ────────────────────────────────────────────────────
+deploy/nginx/ssl/
+
+# ── Misc ──────────────────────────────────────────────────────
+*.tmp
+*.bak
